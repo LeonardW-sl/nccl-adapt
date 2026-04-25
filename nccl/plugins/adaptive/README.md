@@ -6,6 +6,8 @@ This directory contains a standalone `libnccl-adaptive.so` that exports both:
 - `ncclTunerPlugin_v5`
 
 The implementation stays inside `nccl/plugins` and does not modify NCCL core source files.
+The adaptive plugin is self-contained: the minimal NCCL profiler API headers it
+needs are vendored under `include/nccl/`.
 
 ## Behavior
 
