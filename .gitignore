@@ -1,0 +1,16 @@
+.github/skills/
+tools
+.cline
+.codex
+.clinerules
+.github/prompts/
+
+# Build artifacts and local runtime outputs
+*.o
+*.so
+__pycache__/
+*.pyc
+
+# Adaptive NCCL experiment outputs
+nccl/plugins/adaptive/results-*/
+nccl/plugins/adaptive/runtime-logs/
