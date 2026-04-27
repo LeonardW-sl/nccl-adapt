@@ -11,7 +11,7 @@ PLUGIN_DIR=$2
 shift 2
 
 PLUGIN_SO="${PLUGIN_DIR}/libnccl-adaptive.so"
-RESULT_DIR="${RESULT_DIR:-${PLUGIN_DIR}/results}"
+RESULT_DIR="${RESULT_DIR:-${PLUGIN_DIR}/experiments/mode-comparison/$(date +%F)-allreduce-modes}"
 mkdir -p "${RESULT_DIR}"
 
 record_env() {
@@ -48,12 +48,13 @@ run_mode profiler-only "${COMMON_ARGS[@]}"
 
 export NCCL_PROFILER_PLUGIN="${PLUGIN_SO}"
 export NCCL_TUNER_PLUGIN="${PLUGIN_SO}"
-export NCCL_ADAPTIVE_MODE=static
-export NCCL_ADAPTIVE_STATIC_CANDIDATE="${NCCL_ADAPTIVE_STATIC_CANDIDATE:-ring/simple}"
-run_mode static-tuner "${COMMON_ARGS[@]}"
+export NCCL_ADAPTIVE_MODE=final-steady
+export NCCL_ADAPTIVE_RECHECK_AFTER=0
+run_mode final-steady "${COMMON_ARGS[@]}"
 
 export NCCL_PROFILER_PLUGIN="${PLUGIN_SO}"
 export NCCL_TUNER_PLUGIN="${PLUGIN_SO}"
-export NCCL_ADAPTIVE_MODE=adaptive
+export NCCL_ADAPTIVE_MODE=weak-online
 unset NCCL_ADAPTIVE_STATIC_CANDIDATE
-run_mode adaptive-tuner "${COMMON_ARGS[@]}"
+unset NCCL_ADAPTIVE_RECHECK_AFTER
+run_mode weak-online "${COMMON_ARGS[@]}"

@@ -14,3 +14,4 @@ __pycache__/
 # Adaptive NCCL experiment outputs
 nccl/plugins/adaptive/results-*/
 nccl/plugins/adaptive/runtime-logs/
+nccl/plugins/adaptive/experiments
