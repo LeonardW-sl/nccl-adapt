@@ -1318,10 +1318,12 @@ void maybeRecordCompletion(CollHandle* coll) {
       keyToText(coll->key, keyText, sizeof(keyText));
       ADAPTIVE_LOG(coll->context != nullptr ? coll->context->logfn : nullptr, NCCL_LOG_INFO, NCCL_TUNING,
           "ADAPTIVE/completion record-ready comm=%" PRIu64 " key=%s seq=%" PRIu64 " phase=%" PRIu64
-          " attached=%d sampled=%d started=%d stopped=%d nchannels=%d partial=%d host_fallback=%d",
+          " attached=%d sampled=%d started=%d stopped=%d candidate=%s selected_algo=%s"
+          " selected_proto=%s nchannels=%d partial=%d host_fallback=%d",
           coll->commId, keyText, coll->sequence, coll->phase, coll->planAttached ? 1 : 0,
           coll->sampledWindow ? 1 : 0, coll->startedKernelChannels, coll->stoppedKernelChannels,
-          coll->nChannels, partialKernelCoverage ? 1 : 0, usedHostStopFallback ? 1 : 0);
+          coll->phaseCandidate.c_str(), coll->algo.c_str(), coll->proto.c_str(), coll->nChannels,
+          partialKernelCoverage ? 1 : 0, usedHostStopFallback ? 1 : 0);
     }
     ready = true;
   }

@@ -23,7 +23,17 @@ RUN_LABEL="${RUN_LABEL:-$(date +%F)-torch-${EXPERIMENT_TYPE}}"
 STATIC_REPLAY_CANDIDATE="${STATIC_REPLAY_CANDIDATE:-ring/simple}"
 SIZE_SWEEP_MBS="${SIZE_SWEEP_MBS:-}"
 SWEEP_MODE="${SWEEP_MODE:-weak-online}"
+DEFAULT_RECHECK_AFTER="${NCCL_ADAPTIVE_RECHECK_AFTER:-}"
 COMMON_ARGS=("$@")
+TOPOLOGY_GROUP="${TOPOLOGY_GROUP:-}"
+TOPOLOGY_CPU_AFFINITY="${TOPOLOGY_CPU_AFFINITY:-}"
+TOPOLOGY_NUMA_NODES="${TOPOLOGY_NUMA_NODES:-}"
+TOPOLOGY_CROSS_SOCKET="${TOPOLOGY_CROSS_SOCKET:-}"
+CONTAINER_IMAGE_TAG="${CONTAINER_IMAGE_TAG:-}"
+CONTAINER_IMAGE_ID="${CONTAINER_IMAGE_ID:-}"
+CONTAINER_IMAGE_DIGEST="${CONTAINER_IMAGE_DIGEST:-}"
+CONTAINER_WORKDIR="${CONTAINER_WORKDIR:-$(pwd)}"
+CONTAINER_LAUNCH_ARGS="${CONTAINER_LAUNCH_ARGS:-}"
 
 default_category_for_type() {
   case "$1" in
@@ -171,9 +181,32 @@ record_env() {
     echo "NPROC_PER_NODE=${NPROC_PER_NODE}"
     echo "MASTER_ADDR=${MASTER_ADDR}"
     echo "MASTER_PORT=${MASTER_PORT}"
+    echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}"
+    echo "TOPOLOGY_GROUP=${TOPOLOGY_GROUP}"
+    echo "TOPOLOGY_CPU_AFFINITY=${TOPOLOGY_CPU_AFFINITY}"
+    echo "TOPOLOGY_NUMA_NODES=${TOPOLOGY_NUMA_NODES}"
+    echo "TOPOLOGY_CROSS_SOCKET=${TOPOLOGY_CROSS_SOCKET}"
+    echo "CONTAINER_IMAGE_TAG=${CONTAINER_IMAGE_TAG}"
+    echo "CONTAINER_IMAGE_ID=${CONTAINER_IMAGE_ID}"
+    echo "CONTAINER_IMAGE_DIGEST=${CONTAINER_IMAGE_DIGEST}"
+    echo "CONTAINER_WORKDIR=${CONTAINER_WORKDIR}"
+    echo "CONTAINER_LAUNCH_ARGS=${CONTAINER_LAUNCH_ARGS}"
     echo "ADAPTIVE_MESSAGE_MB=${ADAPTIVE_MESSAGE_MB:-}"
     echo "ADAPTIVE_WARMUP_ITERS=${ADAPTIVE_WARMUP_ITERS:-}"
     echo "ADAPTIVE_MEASURE_ITERS=${ADAPTIVE_MEASURE_ITERS:-}"
+    echo "ADAPTIVE_HARNESS=${ADAPTIVE_HARNESS:-}"
+    echo "ADAPTIVE_MICROSTEP_PREAMBLE_REPEATS=${ADAPTIVE_MICROSTEP_PREAMBLE_REPEATS:-}"
+    echo "ADAPTIVE_MICROSTEP_OVERLAP_REPEATS=${ADAPTIVE_MICROSTEP_OVERLAP_REPEATS:-}"
+    echo "ADAPTIVE_MICROSTEP_EPILOGUE_REPEATS=${ADAPTIVE_MICROSTEP_EPILOGUE_REPEATS:-}"
+    echo "ADAPTIVE_MICROSTEP_COMPUTE_NUMEL=${ADAPTIVE_MICROSTEP_COMPUTE_NUMEL:-}"
+    echo "ADAPTIVE_MICROSTEP_COMPUTE_FAMILY=${ADAPTIVE_MICROSTEP_COMPUTE_FAMILY:-}"
+    echo "ADAPTIVE_MICROSTEP_GEMM_DTYPE=${ADAPTIVE_MICROSTEP_GEMM_DTYPE:-}"
+    echo "ADAPTIVE_MICROSTEP_GEMM_SHAPE=${ADAPTIVE_MICROSTEP_GEMM_SHAPE:-}"
+    echo "ADAPTIVE_MICROSTEP_GEMM_M=${ADAPTIVE_MICROSTEP_GEMM_M:-}"
+    echo "ADAPTIVE_MICROSTEP_GEMM_N=${ADAPTIVE_MICROSTEP_GEMM_N:-}"
+    echo "ADAPTIVE_MICROSTEP_GEMM_K=${ADAPTIVE_MICROSTEP_GEMM_K:-}"
+    echo "ADAPTIVE_MICROSTEP_GEMM_UNIT_MS=${ADAPTIVE_MICROSTEP_GEMM_UNIT_MS:-}"
+    echo "ADAPTIVE_MICROSTEP_CALIBRATION_MODE=${ADAPTIVE_MICROSTEP_CALIBRATION_MODE:-}"
     echo "NCCL_DEBUG=${NCCL_DEBUG:-}"
     echo "NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-}"
     echo "NCCL_CUMEM_HOST_ENABLE=${NCCL_CUMEM_HOST_ENABLE:-}"
@@ -189,6 +222,12 @@ record_env() {
     echo "NCCL_ADAPTIVE_LOG_COMPLETION=${NCCL_ADAPTIVE_LOG_COMPLETION:-}"
     echo "memlock=$(ulimit -l)"
     df -h /dev/shm || true
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      echo "visible_gpu_inventory_begin"
+      nvidia-smi --query-gpu=index,pci.bus_id,pcie.link.gen.current,pcie.link.width.current \
+        --format=csv,noheader || true
+      echo "visible_gpu_inventory_end"
+    fi
   } > "${run_dir}/env.txt"
 }
 
@@ -228,13 +267,48 @@ write_manifest() {
     "mode_order_strategy=${MODE_ORDER_STRATEGY}" \
     "mode_order_seed=${MODE_ORDER_SEED}" \
     "mode_sequence=${modes_csv}" \
+    "mode_message_mb=${ADAPTIVE_MESSAGE_MB:-}" \
+    "mode_warmup_iters=${ADAPTIVE_WARMUP_ITERS:-}" \
+    "mode_measure_iters=${ADAPTIVE_MEASURE_ITERS:-}" \
+    "harness=${ADAPTIVE_HARNESS:-}" \
+    "microstep_preamble_repeats=${ADAPTIVE_MICROSTEP_PREAMBLE_REPEATS:-}" \
+    "microstep_overlap_repeats=${ADAPTIVE_MICROSTEP_OVERLAP_REPEATS:-}" \
+    "microstep_epilogue_repeats=${ADAPTIVE_MICROSTEP_EPILOGUE_REPEATS:-}" \
+    "microstep_compute_numel=${ADAPTIVE_MICROSTEP_COMPUTE_NUMEL:-}" \
+    "microstep_compute_family=${ADAPTIVE_MICROSTEP_COMPUTE_FAMILY:-}" \
+    "microstep_gemm_dtype=${ADAPTIVE_MICROSTEP_GEMM_DTYPE:-}" \
+    "microstep_gemm_shape=${ADAPTIVE_MICROSTEP_GEMM_SHAPE:-}" \
+    "microstep_gemm_m=${ADAPTIVE_MICROSTEP_GEMM_M:-}" \
+    "microstep_gemm_n=${ADAPTIVE_MICROSTEP_GEMM_N:-}" \
+    "microstep_gemm_k=${ADAPTIVE_MICROSTEP_GEMM_K:-}" \
+    "microstep_gemm_unit_ms=${ADAPTIVE_MICROSTEP_GEMM_UNIT_MS:-}" \
+    "microstep_calibration_mode=${ADAPTIVE_MICROSTEP_CALIBRATION_MODE:-}" \
     "size_sweep_mbs=${sizes_csv}" \
     "sweep_mode=${SWEEP_MODE}" \
     "nnodes=${NNODES}" \
     "nproc_per_node=${NPROC_PER_NODE}" \
     "master_addr=${MASTER_ADDR}" \
     "master_port=${MASTER_PORT}" \
-    "static_replay_candidate=${STATIC_REPLAY_CANDIDATE}"
+    "static_replay_candidate=${STATIC_REPLAY_CANDIDATE}" \
+    "adaptive_candidate_count=$(candidate_count)" \
+    "adaptive_warmup_samples_per_candidate=${NCCL_ADAPTIVE_WARMUP_SAMPLES_PER_CANDIDATE:-}" \
+    "adaptive_recheck_samples_per_candidate=${NCCL_ADAPTIVE_RECHECK_SAMPLES_PER_CANDIDATE:-}" \
+    "adaptive_recheck_after=${DEFAULT_RECHECK_AFTER}" \
+    "adaptive_min_samples=${NCCL_ADAPTIVE_MIN_SAMPLES:-}" \
+    "adaptive_switch_threshold_pct=${NCCL_ADAPTIVE_SWITCH_THRESHOLD_PCT:-}" \
+    "adaptive_activation_lag=${NCCL_ADAPTIVE_ACTIVATION_LAG:-}" \
+    "log_coordinator=${NCCL_ADAPTIVE_LOG_COORDINATOR:-}" \
+    "log_completion=${NCCL_ADAPTIVE_LOG_COMPLETION:-}" \
+    "topology_group=${TOPOLOGY_GROUP}" \
+    "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-}" \
+    "cpu_affinity=${TOPOLOGY_CPU_AFFINITY}" \
+    "numa_nodes=${TOPOLOGY_NUMA_NODES}" \
+    "cross_socket=${TOPOLOGY_CROSS_SOCKET}" \
+    "container_image_tag=${CONTAINER_IMAGE_TAG}" \
+    "container_image_id=${CONTAINER_IMAGE_ID}" \
+    "container_image_digest=${CONTAINER_IMAGE_DIGEST}" \
+    "container_workdir=${CONTAINER_WORKDIR}" \
+    "container_launch_args=${CONTAINER_LAUNCH_ARGS}"
 }
 
 run_mode() {
@@ -279,6 +353,9 @@ run_mode() {
       export NCCL_PROFILER_PLUGIN="${PLUGIN_SO}"
       export NCCL_TUNER_PLUGIN="${PLUGIN_SO}"
       export NCCL_ADAPTIVE_MODE="weak-online"
+      if [[ -n "${DEFAULT_RECHECK_AFTER}" ]]; then
+        export NCCL_ADAPTIVE_RECHECK_AFTER="${DEFAULT_RECHECK_AFTER}"
+      fi
       ;;
     static-replay)
       export NCCL_PROFILER_PLUGIN="${PLUGIN_SO}"
@@ -300,20 +377,62 @@ run_mode() {
     "replicate_id=${replicate_id}" \
     "run_order=${run_order}" \
     "message_mb=${message_mb}" \
+    "warmup_iters=${ADAPTIVE_WARMUP_ITERS:-}" \
+    "measure_iters=${ADAPTIVE_MEASURE_ITERS:-}" \
+    "harness=${ADAPTIVE_HARNESS:-}" \
+    "microstep_preamble_repeats=${ADAPTIVE_MICROSTEP_PREAMBLE_REPEATS:-}" \
+    "microstep_overlap_repeats=${ADAPTIVE_MICROSTEP_OVERLAP_REPEATS:-}" \
+    "microstep_epilogue_repeats=${ADAPTIVE_MICROSTEP_EPILOGUE_REPEATS:-}" \
+    "microstep_compute_numel=${ADAPTIVE_MICROSTEP_COMPUTE_NUMEL:-}" \
+    "microstep_compute_family=${ADAPTIVE_MICROSTEP_COMPUTE_FAMILY:-}" \
+    "microstep_gemm_dtype=${ADAPTIVE_MICROSTEP_GEMM_DTYPE:-}" \
+    "microstep_gemm_shape=${ADAPTIVE_MICROSTEP_GEMM_SHAPE:-}" \
+    "microstep_gemm_m=${ADAPTIVE_MICROSTEP_GEMM_M:-}" \
+    "microstep_gemm_n=${ADAPTIVE_MICROSTEP_GEMM_N:-}" \
+    "microstep_gemm_k=${ADAPTIVE_MICROSTEP_GEMM_K:-}" \
+    "microstep_gemm_unit_ms=${ADAPTIVE_MICROSTEP_GEMM_UNIT_MS:-}" \
+    "microstep_calibration_mode=${ADAPTIVE_MICROSTEP_CALIBRATION_MODE:-}" \
     "size_bucket=${size_bucket}" \
     "nnodes=${NNODES}" \
     "nproc_per_node=${NPROC_PER_NODE}" \
     "static_replay_candidate=${STATIC_REPLAY_CANDIDATE}" \
-    "torch_args=${COMMON_ARGS[*]}"
+    "adaptive_candidate_count=$(candidate_count)" \
+    "adaptive_warmup_samples_per_candidate=${NCCL_ADAPTIVE_WARMUP_SAMPLES_PER_CANDIDATE:-}" \
+    "adaptive_recheck_samples_per_candidate=${NCCL_ADAPTIVE_RECHECK_SAMPLES_PER_CANDIDATE:-}" \
+    "adaptive_recheck_after=${NCCL_ADAPTIVE_RECHECK_AFTER:-}" \
+    "adaptive_min_samples=${NCCL_ADAPTIVE_MIN_SAMPLES:-}" \
+    "adaptive_switch_threshold_pct=${NCCL_ADAPTIVE_SWITCH_THRESHOLD_PCT:-}" \
+    "adaptive_activation_lag=${NCCL_ADAPTIVE_ACTIVATION_LAG:-}" \
+    "log_coordinator=${NCCL_ADAPTIVE_LOG_COORDINATOR:-}" \
+    "log_completion=${NCCL_ADAPTIVE_LOG_COMPLETION:-}" \
+    "torch_args=${COMMON_ARGS[*]}" \
+    "topology_group=${TOPOLOGY_GROUP}" \
+    "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-}" \
+    "cpu_affinity=${TOPOLOGY_CPU_AFFINITY}" \
+    "numa_nodes=${TOPOLOGY_NUMA_NODES}" \
+    "cross_socket=${TOPOLOGY_CROSS_SOCKET}" \
+    "container_image_tag=${CONTAINER_IMAGE_TAG}" \
+    "container_image_id=${CONTAINER_IMAGE_ID}" \
+    "container_image_digest=${CONTAINER_IMAGE_DIGEST}" \
+    "container_workdir=${CONTAINER_WORKDIR}"
 
-  echo "== replicate ${replicate_id} run ${run_order}: ${mode} (${message_mb} MiB) =="
-  torchrun \
-    --nnodes="${NNODES}" \
-    --nproc-per-node="${NPROC_PER_NODE}" \
-    --master-addr="${MASTER_ADDR}" \
-    --master-port="${MASTER_PORT}" \
-    "${PLUGIN_DIR}/torch_allreduce_smoke.py" \
-    "${COMMON_ARGS[@]}" 2>&1 | tee "${log_path}"
+  echo "== replicate ${replicate_id} run ${run_order}: ${mode} (${message_mb} MiB) topology=${TOPOLOGY_GROUP:-default} =="
+  local -a run_cmd
+  run_cmd=(
+    torchrun
+    --nnodes="${NNODES}"
+    --nproc-per-node="${NPROC_PER_NODE}"
+    --master-addr="${MASTER_ADDR}"
+    --master-port="${MASTER_PORT}"
+    "${PLUGIN_DIR}/torch_allreduce_smoke.py"
+  )
+  if [[ ${#COMMON_ARGS[@]} -gt 0 ]]; then
+    run_cmd+=("${COMMON_ARGS[@]}")
+  fi
+  if [[ -n "${TOPOLOGY_CPU_AFFINITY}" ]]; then
+    run_cmd=(taskset -c "${TOPOLOGY_CPU_AFFINITY}" "${run_cmd[@]}")
+  fi
+  "${run_cmd[@]}" 2>&1 | tee "${log_path}"
 
   python3 "${ANALYZER}" summarize-run \
     --log "${log_path}" \

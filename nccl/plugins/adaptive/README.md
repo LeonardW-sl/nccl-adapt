@@ -20,6 +20,9 @@
   - `openspec/changes/minimal-weak-online-closed-loop/evidence.md`
   - `openspec/changes/cross-rank-coordinator/evidence.md`
   - `openspec/changes/experiment-determinism-spec/evidence.md`
+  - `openspec/changes/topology-controlled-experiment-matrix/evidence.md`
+  - `openspec/changes/same-socket-steady-tuner-isolation/evidence.md`
+  - `openspec/changes/numa1-mechanism-cost-decomposition/evidence.md`
 
 This directory contains a standalone `libnccl-adaptive.so` that exports both:
 
@@ -119,13 +122,123 @@ unset NCCL_TUNER_PLUGIN
 - Every invocation writes a `manifest.json` at the experiment root.
 - Each concrete run lives under `replicate-XX/run-YY-<mode>/`.
 - Each run directory contains:
-  - `env.txt`: raw environment snapshot
-  - `metadata.json`: experiment type, replicate id, run order, message size, size bucket, and replay candidate
+  - `env.txt`: raw environment snapshot, including visible GPU PCIe inventory and container launch metadata when provided
+  - `metadata.json`: experiment type, replicate id, run order, message size, size bucket, replay candidate, and optional topology/container fields
   - `stdout.log`: raw torchrun output
   - `summary.json`: parsed latency summary with `median`, `p95`, `max`, and phase-aware breakdowns
   - `trajectory.json`: parsed coordinator publish/activate trajectory when diagnostics are enabled
 - `mode-comparison`, `correctness`, and `policy-quality` runs additionally emit `comparison-summary.json`.
 - `state-granularity` runs additionally emit `candidate-trajectories.json`.
+
+### Topology-Controlled Matrix
+
+`run_topology_controlled_experiments.sh` wraps `run_torch_modes.sh` for the single-node `4+4` topology-controlled rerun required by the current OpenSpec change.
+
+- It records host snapshots before any GPU work:
+  - `nvidia-smi topo -m`
+  - GPU bus IDs and PCIe link state
+  - `numactl -H`
+  - NIC locality from `/sys/class/infiniband/<device>/`
+- It records container runtime metadata inside `nvcr.io/nvidia/pytorch:26.03-py3`:
+  - image id / repo digest
+  - bind mount and working directory
+  - `ldd --version`
+  - `ldd`, `readelf -d`, and `nm -D --defined-only` for `libnccl-adaptive.so`
+- It runs three explicit placements:
+  - `numa0-4gpu`: `CUDA_VISIBLE_DEVICES=0,1,2,3`, `NPROC_PER_NODE=4`, `CPU=0-31,64-95`
+  - `numa1-4gpu`: `CUDA_VISIBLE_DEVICES=4,5,6,7`, `NPROC_PER_NODE=4`, `CPU=32-63,96-127`
+  - `cross-8gpu`: `CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7`, `NPROC_PER_NODE=8`, `CPU=0-127`
+- It emits a topology root under `experiments/topology-controlled/<RUN_LABEL>/` with:
+  - `host/`: topology snapshots and idle-check result
+  - `container/`: runtime and link-check outputs
+  - `smoke-baseline/<group>/`
+  - `mode-comparison/<group>/`
+  - `state-granularity/<group>/`
+  - `recheck-shift/<group>/recheck-after-*/`
+  - `matrix-manifest.json`
+  - `topology-summary.json`
+
+Example topology-controlled rerun:
+
+```bash
+cd nccl/plugins/adaptive
+RUN_LABEL=2026-05-11-topology-controlled \
+REPLICATES=3 MODE_MESSAGE_MB=8 MODE_MEASURE_ITERS=72 \
+SIZE_SWEEP_MBS=5,6,7 RECHECK_SHIFT_VALUES=32 \
+./run_topology_controlled_experiments.sh
+```
+
+### Same-Socket Steady-Tuner Isolation Matrix
+
+`run_same_socket_steady_tuner_isolation.sh` wraps `run_torch_modes.sh` for the
+follow-up same-socket isolation change.
+
+- It keeps only same-socket placements:
+  - `numa0-4gpu`: `CUDA_VISIBLE_DEVICES=0,1,2,3`, `NPROC_PER_NODE=4`, `CPU=0-31,64-95`
+  - `numa1-4gpu`: `CUDA_VISIBLE_DEVICES=4,5,6,7`, `NPROC_PER_NODE=4`, `CPU=32-63,96-127`
+- It keeps only `profiler-only` and `final-steady`, with the same container
+  image and adaptive parameters used by the topology-controlled rerun.
+- It stretches the measurement window to `MODE_MEASURE_ITERS=192` and records
+  the run-window parameters plus coordinator/completion logging flags in the
+  root manifest and each run's `metadata.json`.
+- It emits a same-socket root under
+  `experiments/same-socket-steady-tuner-isolation/<RUN_LABEL>/` with:
+  - `host/`: topology and host runtime snapshots
+  - `container/`: image/runtime metadata and NCCL link view
+  - `mode-comparison/<group>/`
+  - `matrix-manifest.json`
+  - `same-socket-summary.json`
+- Aggregate summaries preserve:
+  - `profiler-only` `callback-only` stats
+  - `final-steady` `overall`, `pre-activation`, `post-activation`, and `sampled-warmup` stats
+  - first publish / first activate boundaries, activated candidate, and aggregate
+    `wait-summary` / completion diagnostics
+
+Example same-socket isolation rerun:
+
+```bash
+cd nccl/plugins/adaptive
+RUN_LABEL=2026-05-12-same-socket-steady-tuner-isolation-long192 \
+./run_same_socket_steady_tuner_isolation.sh
+```
+
+### NUMA1 Mechanism Cost Decomposition Matrix
+
+`run_numa1_mechanism_cost_decomposition.sh` wraps `run_torch_modes.sh` for the
+`numa1-mechanism-cost-decomposition` change.
+
+- It keeps only the clean `numa1-4gpu` placement:
+  - `CUDA_VISIBLE_DEVICES=4,5,6,7`, `NPROC_PER_NODE=4`, `CPU=32-63,96-127`
+- It fixes a four-mode long-window matrix under the same container and adaptive
+  settings used by the same-socket rerun:
+  - `baseline`
+  - `profiler-only`
+  - `static-replay`
+  - `final-steady`
+- It defaults `STATIC_REPLAY_CANDIDATE=ring/simple`, records the learned
+  `final-steady` candidate in the root manifest, and only emits a supplemental
+  `candidate-aligned-replay/` subtree if the rerun drifts to a different
+  candidate.
+- It emits a root under
+  `experiments/numa1-mechanism-cost-decomposition/<RUN_LABEL>/` with:
+  - `host/`: topology and host runtime snapshots
+  - `container/`: image/runtime metadata
+  - `mode-comparison/numa1-4gpu/`
+  - `matrix-manifest.json`
+  - `numa1-mechanism-summary.json`
+- Aggregate summaries preserve:
+  - the three decomposition deltas
+  - candidate-alignment status
+  - plugin-loaded path observability for `candidate`, `selectedAlgo`,
+    `selectedProto`, and `nChannels`
+
+Example NUMA1 mechanism decomposition rerun:
+
+```bash
+cd nccl/plugins/adaptive
+RUN_LABEL=2026-05-12-numa1-mechanism-cost-decomposition \
+./run_numa1_mechanism_cost_decomposition.sh
+```
 
 ### Experiment Types
 
@@ -354,6 +467,105 @@ Fresh rotated 3-replicate mode comparison (`warmup_iters=4`, `measure_iters=64`)
   should therefore be treated as a historical, non-reproduced observation
   rather than a current conclusion for this branch.
 
+### Topology-Controlled Rerun - 2026-05-11
+
+The topology-controlled rerun collected for
+`topology-controlled-experiment-matrix` lives under:
+
+- `experiments/topology-controlled/2026-05-11-topology-controlled`
+
+This batch is the current source of truth for topology-sensitive questions on
+the single-node `4+4` server. It separates three evidence layers that should
+not be merged:
+
+- Historical bucket-honesty logs under `experiments/bucket-honesty/`
+- Fresh protocol rerun under `experiments/state-granularity/2026-04-26-protocol-state-granularity`
+- Topology-controlled rerun under `experiments/topology-controlled/2026-05-11-topology-controlled`
+
+#### Topology Smoke And Mode Comparison
+
+| Group | Smoke baseline avg | Full baseline avg | `weak-online` avg | Note |
+| --- | ---: | ---: | ---: | --- |
+| `numa0-4gpu` | 0.415 ms | 0.420 ms | 1.032 ms | Same-socket, higher tuning cost than `numa1-4gpu` |
+| `numa1-4gpu` | 0.436 ms | 0.411 ms | 0.481 ms | Same-socket, NIC-local side, lowest overall cost |
+| `cross-8gpu` | 0.512 ms | 0.581 ms | 1.460 ms | Cross-socket path amplifies baseline and tuning cost |
+
+- Same-socket baseline smoke is stable enough to act as a noise floor.
+- `cross-8gpu` baseline is materially slower than both same-socket groups, so
+  topology is a real variable even before the profiler or tuner is enabled.
+- NCCL logs in `profiler-only`, `final-steady`, and `weak-online` all confirm
+  runtime loading from `/workspace/nccl-adapt/nccl/plugins/adaptive/libnccl-adaptive.so`.
+- The `weak-online` steady segment stays within `0.029 ms` of `final-steady`
+  across all groups, so most extra cost is not from the steady tuning path.
+
+#### Recheck Attribution
+
+- In `cross-8gpu`, `NCCL_ADAPTIVE_RECHECK_AFTER=64` puts the first recheck at
+  step `68`.
+- Re-running the same batch with `NCCL_ADAPTIVE_RECHECK_AFTER=32` moves the
+  first recheck to step `36`.
+- The spike window therefore tracks the recheck period instead of staying fixed
+  to one absolute position, which supports attributing the extra spikes to the
+  recheck window rather than to a static topology artifact.
+
+#### Topology-Controlled State Granularity
+
+- Re-running `SIZE_SWEEP_MBS=5,6,7` with explicit topology groups and
+  `NCCL_ADAPTIVE_RECHECK_AFTER=8` does not reproduce any candidate split.
+- `numa0-4gpu`, `numa1-4gpu`, and `cross-8gpu` all publish only
+  `ring/simple`.
+- The current branch therefore has no reproduced evidence for either
+  topology-sensitive bucket divergence or same-socket bucket divergence.
+- A follow-up bucket-refinement change is not justified by the current
+  topology-controlled data.
+
+### Same-Socket Steady-Tuner Isolation - 2026-05-12
+
+The follow-up rerun collected for `same-socket-steady-tuner-isolation` lives
+under:
+
+- `experiments/same-socket-steady-tuner-isolation/2026-05-12-same-socket-steady-tuner-isolation-long192`
+
+This batch is intentionally narrower than the topology-controlled rerun:
+
+- same workload, container image, and adaptive parameters as the
+  `2026-05-11-topology-controlled` mode comparison
+- only `numa0-4gpu` and `numa1-4gpu`
+- only `profiler-only` and `final-steady`
+- a longer `4 / 192` warmup/measure window so pre-activation and
+  post-activation behavior can be separated
+
+#### Long-Window Same-Socket Comparison
+
+| Group | `profiler-only` avg | `final-steady` avg | `pre-activation` avg | `post-activation` avg | Reading |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `numa0-4gpu` | 0.598 ms | 0.961 ms | 0.991 ms | 0.953 ms | Large jump persists after activation |
+| `numa1-4gpu` | 0.440 ms | 0.454 ms | 0.452 ms | 0.445 ms | Long-window jump mostly disappears |
+
+- Both groups still publish and activate the same `ring/simple` candidate near
+  step `6`, and both profiler/tuner logs confirm runtime loading from
+  `/workspace/nccl-adapt/nccl/plugins/adaptive/libnccl-adaptive.so`.
+- `numa0-4gpu` keeps a `0.365 ms` post-activation gap above
+  `profiler-only`, so front-half warmup / publish / activate contamination is
+  not a sufficient explanation by itself.
+- `numa1-4gpu` converges almost completely: `0.445 ms` post-activation versus
+  `0.440 ms` in `profiler-only`.
+- This batch does not run `weak-online`, so the persistent `numa0-4gpu` jump
+  is not attributable to recheck windows.
+
+#### Boundary With Topology-Controlled Conclusions
+
+- `topology-controlled-experiment-matrix` still owns the claims that
+  `cross-8gpu` baseline cost is real and that `weak-online` spikes track
+  `NCCL_ADAPTIVE_RECHECK_AFTER`.
+- `same-socket-steady-tuner-isolation` owns the narrower claim that the large
+  `profiler-only -> final-steady` jump is not universal across same-socket
+  placements.
+- The current branch therefore supports a placement-local interpretation:
+  `numa0-4gpu` keeps the large steady-path delta, while `numa1-4gpu` does not,
+  so future steady-tuner cost claims should quote placement explicitly instead
+  of generalizing from one socket.
+
 The tuner-enabled SIGSEGV root cause was invalid cost-table indexing. NCCL passes
 a contiguous `float[numAlgo][numProto]` buffer cast as `float**`; treating it as
 an actual pointer-to-pointer dereferenced float data as row pointers. The tuner
@@ -380,7 +592,9 @@ Known limitations and next steps:
 - These results are single-node only; multi-node coordination remains out of scope for this first implementation.
 - The short torch smoke validates correctness and activation consistency, not final performance stability across workloads.
 - The coordinator is single-node, rank-0-representative, and window-summary driven; there is still no external cross-rank control service in this revision.
+- Cross-socket placement measurably amplifies both pure NCCL baseline cost and tuner-enabled cost, so future overhead claims should continue to quote topology group explicitly.
+- The same-socket long-window rerun leaves a large `final-steady` delta only on `numa0-4gpu`, so the remaining steady-path cost should be treated as placement-local until a broader reproduction says otherwise.
 - `weak-online` overhead still contains recheck-window spikes, so segmented interpretation is required even after adding `median`, `p95`, and `max`.
-- Current size-bucket evaluation shows that the shared `4-8 MiB` bucket is too coarse for weak-online policy publication; a deterministic midpoint sub-bucket refinement is the recommended next evolution.
+- Current topology-controlled size sweeps do not reproduce stable `4-8 MiB` bucket divergence, so bucket refinement should stay blocked on new evidence rather than proceed as the default next step.
 - `all_reduce_perf` in the tested container still fails independently with `Cuda failure 101 'invalid device ordinal'`, so torch distributed remains the active benchmark path.
 - No shared-memory, memlock, or cuMem host allocation failure was observed with the run settings above.

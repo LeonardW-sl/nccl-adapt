@@ -4,10 +4,19 @@ schema: spec-driven
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
 # Example:
-   context: |
-Language: Chinese  Write in Chinese, but:
-- Keep technical terms like "API", "REST","GraphQL"in English
-- Code examples and file paths remain in English
+context: |
+  Language: Chinese  Write in Chinese, but:
+  - Keep technical terms like "API", "REST","GraphQL"in English
+  - Code examples and file paths remain in English
+
+  Project-wide OpenSpec orientation:
+  - Read `openspec/program-outline.md` first for the current north-star goal, staged proof order, and project progress snapshot.
+  - New changes should align with that outline unless they explicitly state why they are deviating.
+
+  Experiment context:
+  - On the current 8x RTX 5090 dual-socket server, treat `numa1-4gpu` as the preferred clean reference bench for mechanism-cost decomposition and first-pass validation.
+  - Treat `numa0-4gpu` as a placement-local anomaly surface on this machine: do not use it as the default reference when making new mechanism claims unless the change explicitly targets that anomaly.
+  - For new mechanism-spec changes, prefer proving the result on `numa1-4gpu` first; only suggest H100 follow-up after the `numa1-4gpu` mechanism decomposition is clear enough to produce a `go` decision.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
